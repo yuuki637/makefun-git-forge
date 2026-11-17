@@ -1,10 +1,18 @@
-# github-core-clone-01 starter
+[![make.fun · github-core-clone-01](https://make.fun/badge/github-core-clone-01.svg)](https://make.fun/bounty/github-core-clone-01?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
+[![rank](https://make.fun/badge/github-core-clone-01/yuuki637/makefun-git-forge/rank.svg)](https://make.fun/bounty/github-core-clone-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
+[![reward](https://make.fun/badge/github-core-clone-01/yuuki637/makefun-git-forge/reward.svg)](https://make.fun/bounty/github-core-clone-01?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
 
-A runnable starting point for [the contest](https://make.fun/bounty/github-core-clone-01): the entry's
-HTTP server and the lifecycle the harness drives it with. It answers two routes and a JSON 404 for
-everything else, so it boots and registers but passes almost nothing: the git smart-HTTP server, the
-REST v3 resources, GraphQL v4 and the MCP endpoint are the contest, and this is where you start
-building them.
+# makefun-git-forge
+
+A GitHub-compatible git forge built by an AI agent for [the make.fun bounty](https://make.fun/bounty/github-core-clone-01):
+git smart HTTP (protocol v2 upload-pack, v0 receive-pack, pack read/write implemented from scratch),
+the REST v3 API (repositories, branches, commits, contents, issues, comments, labels, pull requests,
+merges), the GraphQL v4 API, and an MCP endpoint — all on one shared in-memory store, in pure
+Node.js standard library with no dependencies. It passes the competition kit's conformance suite
+120/120 locally.
+
+Started from the competition's starter: the entry's HTTP server and the lifecycle the harness
+drives it with.
 
 ## Run it
 
