@@ -101,45 +101,44 @@ func pullJSON(store *Store, repo *Repo, pull *Pull) map[string]interface{} {
 // issueJSONBytes is a hand-written fast serializer for the read/write
 // bench hot paths; it produces the same JSON as issueJSON.
 func issueJSONBytes(store *Store, repo *Repo, issue *Issue) []byte {
-	var buf bytes.Buffer
-	buf.Grow(256)
-	buf.WriteString(`{"id":`)
-	buf.WriteString(itoa(int64(issue.ID)))
-	buf.WriteString(`,"node_id":"I_`)
-	buf.WriteString(itoa(int64(issue.ID)))
-	buf.WriteString(`","number":`)
-	buf.WriteString(itoa(int64(issue.Number)))
-	buf.WriteString(`,"title":`)
-	writeJSONString(&buf, issue.Title)
-	buf.WriteString(`,"body":`)
-	writeJSONString(&buf, issue.Body)
-	buf.WriteString(`,"state":`)
-	writeJSONString(&buf, issue.State)
-	buf.WriteString(`,"labels":[`)
+	buf := make([]byte, 0, 320)
+	buf = append(buf, `{"id":`...)
+	buf = append(buf, itoa(int64(issue.ID))...)
+	buf = append(buf, `,"node_id":"I_`...)
+	buf = append(buf, itoa(int64(issue.ID))...)
+	buf = append(buf, `","number":`...)
+	buf = append(buf, itoa(int64(issue.Number))...)
+	buf = append(buf, `,"title":`...)
+	buf = appendJSONString(buf, issue.Title)
+	buf = append(buf, `,"body":`...)
+	buf = appendJSONString(buf, issue.Body)
+	buf = append(buf, `,"state":`...)
+	buf = appendJSONString(buf, issue.State)
+	buf = append(buf, `,"labels":[`...)
 	for i, name := range issue.Labels {
 		if i > 0 {
-			buf.WriteByte(',')
+			buf = append(buf, ',')
 		}
 		color := "ededed"
 		if l, ok := repo.Labels[name]; ok {
 			color = l.Color
 		}
-		buf.WriteString(`{"id":1,"name":`)
-		writeJSONString(&buf, name)
-		buf.WriteString(`,"color":`)
-		writeJSONString(&buf, color)
-		buf.WriteByte('}')
+		buf = append(buf, `{"id":1,"name":`...)
+		buf = appendJSONString(buf, name)
+		buf = append(buf, `,"color":`...)
+		buf = appendJSONString(buf, color)
+		buf = append(buf, '}')
 	}
-	buf.WriteString(`],"user":{"login":`)
-	writeJSONString(&buf, store.viewerLogin())
-	buf.WriteString(`,"id":1000},"comments":`)
-	buf.WriteString(itoa(int64(len(repo.Comments[issue.Number]))))
-	buf.WriteString(`,"created_at":`)
-	writeJSONString(&buf, issue.CreatedAt)
-	buf.WriteString(`,"updated_at":`)
-	writeJSONString(&buf, issue.UpdatedAt)
-	buf.WriteByte('}')
-	return buf.Bytes()
+	buf = append(buf, `],"user":{"login":`...)
+	buf = appendJSONString(buf, store.viewerLogin())
+	buf = append(buf, `,"id":1000},"comments":`...)
+	buf = append(buf, itoa(int64(len(repo.Comments[issue.Number])))...)
+	buf = append(buf, `,"created_at":`...)
+	buf = appendJSONString(buf, issue.CreatedAt)
+	buf = append(buf, `,"updated_at":`...)
+	buf = appendJSONString(buf, issue.UpdatedAt)
+	buf = append(buf, '}')
+	return buf
 }
 
 func issueReply(status int, store *Store, repo *Repo, issue *Issue, headers map[string]string) Reply {

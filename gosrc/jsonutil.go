@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // marshalJSON mirrors JS JSON.stringify closely enough for the wire:
@@ -89,11 +90,62 @@ func writeJSONValue(buf *bytes.Buffer, v interface{}) {
 }
 
 func writeJSONString(buf *bytes.Buffer, s string) {
-	var tmp bytes.Buffer
-	enc := json.NewEncoder(&tmp)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(s)
-	buf.Write(bytes.TrimRight(tmp.Bytes(), "\n"))
+	buf.Write(appendJSONString(nil, s))
+}
+
+const hexDigits = "0123456789abcdef"
+
+// appendJSONString appends s as a JSON string literal, byte-identical to
+// encoding/json with SetEscapeHTML(false) (which is also what JS
+// JSON.stringify produces for the strings this forge emits): only the
+// quote, backslash and control characters are escaped, U+2028/U+2029 are
+// escaped, invalid UTF-8 bytes become �, everything else is raw.
+func appendJSONString(dst []byte, s string) []byte {
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(s); {
+		if b := s[i]; b < 0x80 {
+			if b >= 0x20 && b != '"' && b != '\\' {
+				i++
+				continue
+			}
+			dst = append(dst, s[start:i]...)
+			switch b {
+			case '"', '\\':
+				dst = append(dst, '\\', b)
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			default:
+				dst = append(dst, '\\', 'u', '0', '0', hexDigits[b>>4], hexDigits[b&0x0f])
+			}
+			i++
+			start = i
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			dst = append(dst, s[start:i]...)
+			dst = append(dst, '\\', 'u', 'f', 'f', 'f', 'd')
+			i++
+			start = i
+			continue
+		}
+		if r == '\u2028' || r == '\u2029' {
+			dst = append(dst, s[start:i]...)
+			dst = append(dst, '\\', 'u', '2', '0', '2', hexDigits[r&0x0f])
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	dst = append(dst, s[start:]...)
+	dst = append(dst, '"')
+	return dst
 }
 
 // formatJSNumber formats a float like JS JSON.stringify: integral values

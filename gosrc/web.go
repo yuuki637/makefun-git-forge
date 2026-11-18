@@ -2,13 +2,24 @@ package main
 
 import (
 	"math"
-	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
 )
 
-type httpHeader = http.Header
+// headerMap stores request headers under canonical MIME keys
+// (textproto.CanonicalMIMEHeaderKey form), one value per name — the only
+// lookups the forge performs are single-value ones (Authorization,
+// Git-Protocol).
+type headerMap map[string]string
+
+func (h headerMap) Get(name string) string {
+	if h == nil {
+		return ""
+	}
+	return h[textproto.CanonicalMIMEHeaderKey(name)]
+}
 
 // Shared request/response plumbing (ported from web.ts).
 
@@ -18,7 +29,7 @@ type Ctx struct {
 	Path      string
 	Segments  []string
 	Query     url.Values
-	Headers   httpHeader
+	Headers   headerMap
 	RawBody   []byte
 	JSON      interface{}
 	JSONError bool

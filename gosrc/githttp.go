@@ -301,10 +301,20 @@ var packCache sync.Map // string -> []byte
 var packCacheCount int64
 var packCacheMu sync.Mutex
 
+// packBuildMu serializes cache-miss builds (singleflight): the clone
+// bench fires 50 concurrent identical fetches, and without it every one
+// of them builds the same pack before the first store lands.
+var packBuildMu sync.Mutex
+
 func buildPack(repo *Repo, objectOids []string) []byte {
 	sorted := append([]string{}, objectOids...)
 	sort.Strings(sorted)
 	key := strconv.Itoa(repo.ID) + ":" + strconv.Itoa(repo.Version) + ":" + strings.Join(sorted, ",")
+	if cached, ok := packCache.Load(key); ok {
+		return cached.([]byte)
+	}
+	packBuildMu.Lock()
+	defer packBuildMu.Unlock()
 	if cached, ok := packCache.Load(key); ok {
 		return cached.([]byte)
 	}
