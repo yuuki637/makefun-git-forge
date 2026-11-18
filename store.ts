@@ -5,8 +5,8 @@ import {
   ZERO_OID,
   buildCommitData,
   buildTreeData,
+  commitHeaderOf,
   hashObject,
-  parseCommit,
   parseTag,
   parseTree,
 } from './git.ts';
@@ -184,7 +184,7 @@ export function flattenTree(repo: Repo, treeOid: string, prefix = '', out = new 
 export function treeOfCommit(repo: Repo, commitOid: string): string | null {
   const obj = repo.objects.get(commitOid);
   if (!obj || obj.type !== 'commit') return null;
-  return parseCommit(obj.data).tree;
+  return commitHeaderOf(obj).tree;
 }
 
 export function flattenCommitTree(repo: Repo, commitOid: string): Map<string, { oid: string; mode: string }> {
@@ -276,12 +276,13 @@ export function ancestorDistances(repo: Repo, start: string, limit = 100000): Ma
   if (!startCommit) return dist;
   const queue: string[] = [startCommit];
   dist.set(startCommit, 0);
-  while (queue.length > 0 && dist.size < limit) {
-    const current = queue.shift() as string;
+  // Index-pointer queue: Array.shift() is O(n) per pop, O(n^2) per walk.
+  for (let head = 0; head < queue.length && dist.size < limit; head += 1) {
+    const current = queue[head];
     const d = dist.get(current) as number;
     const obj = repo.objects.get(current);
     if (!obj || obj.type !== 'commit') continue;
-    for (const parent of parseCommit(obj.data).parents) {
+    for (const parent of commitHeaderOf(obj).parents) {
       if (!dist.has(parent)) {
         dist.set(parent, d + 1);
         queue.push(parent);
@@ -296,7 +297,24 @@ export function isAncestor(repo: Repo, ancestor: string, descendant: string): bo
   const d = peelToCommit(repo, descendant);
   if (!a || !d) return false;
   if (a === d) return true;
-  return ancestorDistances(repo, d).has(a);
+  // Walk back from the descendant and stop as soon as the ancestor turns
+  // up — the usual fast-forward case is a direct parent, one step. The
+  // whole history is only walked when the answer is no.
+  const seen = new Set<string>([d]);
+  const stack = [d];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    const obj = repo.objects.get(current);
+    if (!obj || obj.type !== 'commit') continue;
+    for (const parent of commitHeaderOf(obj).parents) {
+      if (parent === a) return true;
+      if (!seen.has(parent)) {
+        seen.add(parent);
+        stack.push(parent);
+      }
+    }
+  }
+  return false;
 }
 
 export function mergeBase(repo: Repo, a: string, b: string): string | null {
@@ -307,12 +325,12 @@ export function mergeBase(repo: Repo, a: string, b: string): string | null {
   // BFS from b; first commit also in A's ancestors is a merge base.
   const seen = new Set<string>([cb]);
   const queue: string[] = [cb];
-  while (queue.length > 0) {
-    const current = queue.shift() as string;
+  for (let head = 0; head < queue.length; head += 1) {
+    const current = queue[head];
     if (ancestorsA.has(current)) return current;
     const obj = repo.objects.get(current);
     if (!obj || obj.type !== 'commit') continue;
-    for (const parent of parseCommit(obj.data).parents) {
+    for (const parent of commitHeaderOf(obj).parents) {
       if (!seen.has(parent)) {
         seen.add(parent);
         queue.push(parent);
@@ -336,7 +354,7 @@ export function commitHistory(repo: Repo, tip: string, limit = 500): string[] {
     const obj = repo.objects.get(current);
     if (!obj || obj.type !== 'commit') continue;
     out.push(current);
-    const parents = parseCommit(obj.data).parents;
+    const parents = commitHeaderOf(obj).parents;
     for (let i = parents.length - 1; i >= 0; i--) stack.push(parents[i]);
   }
   return out;
@@ -354,7 +372,7 @@ export function collectClosure(repo: Repo, roots: string[]): Set<string> {
     if (!obj) continue;
     out.add(oid);
     if (obj.type === 'commit') {
-      const commit = parseCommit(obj.data);
+      const commit = commitHeaderOf(obj);
       stack.push(commit.tree);
       for (const parent of commit.parents) stack.push(parent);
     } else if (obj.type === 'tree') {

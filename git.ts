@@ -159,6 +159,46 @@ export function parseCommit(data: Buffer): CommitData {
   return result;
 }
 
+export interface CommitHeader {
+  tree: string;
+  parents: string[];
+}
+
+// Tree + parents of a commit, read straight from the raw bytes. Graph
+// walks (reachability, history, fetch planning) need this per commit,
+// and the full parseCommit — whole-buffer string conversion, line
+// splits, regexes — dominated their cost.
+export function parseCommitHeader(data: Buffer): CommitHeader {
+  let tree = ZERO_OID;
+  const parents: string[] = [];
+  let pos = 0;
+  while (pos < data.length) {
+    const nl = data.indexOf(0x0a, pos);
+    const lineEnd = nl === -1 ? data.length : nl;
+    if (lineEnd === pos) break; // blank line ends the header
+    if (lineEnd - pos >= 45 && data[pos] === 0x74 && data.toString('ascii', pos, pos + 5) === 'tree ') {
+      tree = data.toString('ascii', pos + 5, pos + 45);
+    } else if (lineEnd - pos >= 47 && data[pos] === 0x70 && data.toString('ascii', pos, pos + 7) === 'parent ') {
+      parents.push(data.toString('ascii', pos + 7, pos + 47));
+    }
+    if (nl === -1) break;
+    pos = nl + 1;
+  }
+  return { tree, parents };
+}
+
+// Commit objects are immutable once stored, so a parsed header can be
+// cached on the object itself (WeakMap: no lifetime bookkeeping).
+const commitHeaderCache = new WeakMap<GitObject, CommitHeader>();
+export function commitHeaderOf(obj: GitObject): CommitHeader {
+  let header = commitHeaderCache.get(obj);
+  if (!header) {
+    header = parseCommitHeader(obj.data);
+    commitHeaderCache.set(obj, header);
+  }
+  return header;
+}
+
 export function buildCommitData(input: {
   tree: string;
   parents: string[];
@@ -273,30 +313,31 @@ function applyDelta(base: Buffer, delta: Buffer): Buffer {
   return out;
 }
 
-// Inflates one object body starting at offset; returns bytes consumed.
-function inflateAt(buffer: Buffer, offset: number): { data: Buffer; consumed: number } {
-  // zlib stream: find its end by inflating with progressive slices is costly;
-  // instead use the fact that inflateSync on a subarray throws on trailing
-  // garbage only when strict. Node's inflateSync ignores trailing bytes, so
-  // determine the compressed length by trying the sync API via a stream-like
-  // approach: use `inflateSync` with a manually located end. We instead use
-  // zlib's inflate through createInflate in a synchronous accumulation with a
-  // chunked feed is not available; fall back to binary search on stream end:
-  // the deflate stream ends when inflate stops consuming. Node exposes this
-  // via `zlib.inflateSync(buffer, { finishFlush: ... })` not directly.
-  // Practical approach: use the async-free trick of scanning for the point at
-  // which inflateSync succeeds and produces stable output AND the remaining
-  // bytes parse as the next object — too fragile. Use createInflate with
-  // `process` streaming synchronously through a small manual loop is not
-  // possible in pure sync code.
-  // Reliable alternative: incremental window inflation.
-  let lo = 1;
-  let hi = buffer.length - offset;
-  // First try whole remainder (works when this is the last object before trailer handled by caller slicing).
-  // Binary search smallest length that inflates successfully.
+// adler32 (RFC 1950) of a buffer: the checksum a zlib stream ends with.
+function adler32(data: Buffer): number {
+  const MOD = 65521;
+  let a = 1;
+  let b = 0;
+  let i = 0;
+  while (i < data.length) {
+    const end = Math.min(i + 5552, data.length);
+    for (; i < end; i += 1) {
+      a += data[i];
+      b += a;
+    }
+    a %= MOD;
+    b %= MOD;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+// The original boundary search, kept as a fallback for streams the fast
+// path in inflateAt cannot size: binary-search the smallest slice length
+// that inflates (inflateSync ignores trailing bytes past the stream end).
+function inflateBinarySearch(buffer: Buffer, offset: number): { data: Buffer; consumed: number } {
   let best = -1;
   let loBound = 1;
-  let hiBound = hi;
+  let hiBound = buffer.length - offset;
   while (loBound <= hiBound) {
     const mid = (loBound + hiBound) >> 1;
     try {
@@ -308,9 +349,46 @@ function inflateAt(buffer: Buffer, offset: number): { data: Buffer; consumed: nu
     }
   }
   if (best === -1) throw new Error('cannot inflate pack object');
-  lo = best;
-  const data = inflateSync(buffer.subarray(offset, offset + lo));
-  return { data, consumed: lo };
+  const data = inflateSync(buffer.subarray(offset, offset + best));
+  return { data, consumed: best };
+}
+
+// Inflates one object body starting at offset; returns bytes consumed.
+// Fast path: inflate the whole remainder once (inflateSync stops at the
+// end of the zlib stream and ignores what follows), check the result
+// against the size the pack header declared, then locate the stream's
+// end exactly — a zlib stream ends with the adler32 of its plain data,
+// so scan for that trailer and confirm it with one exact-slice inflate
+// compared byte for byte. That is two inflateSync calls per object; the
+// binary search needed ~log2(n), and every call spins up a zlib stream
+// object (and, on a miss, an Error with a stack trace), which made pack
+// reading the dominant cost of receive-pack.
+function inflateAt(buffer: Buffer, offset: number, expectedSize: number): { data: Buffer; consumed: number } {
+  let data: Buffer | null = null;
+  try {
+    data = inflateSync(buffer.subarray(offset));
+  } catch {
+    data = null;
+  }
+  if (data !== null && data.length === expectedSize) {
+    const trailer = Buffer.alloc(4);
+    trailer.writeUInt32BE(adler32(data), 0);
+    // The trailer follows the 2-byte zlib header and a deflate body of at
+    // least 2 bytes, so it cannot start before offset + 4.
+    let pos = buffer.indexOf(trailer, offset + 4);
+    while (pos !== -1) {
+      const end = pos + 4;
+      try {
+        if (inflateSync(buffer.subarray(offset, end)).equals(data)) {
+          return { data, consumed: end - offset };
+        }
+      } catch {
+        // Not the real stream end; keep scanning.
+      }
+      pos = buffer.indexOf(trailer, pos + 1);
+    }
+  }
+  return inflateBinarySearch(buffer, offset);
 }
 
 // Parses a pack buffer. resolveBase supplies objects not in the pack (thin packs).
@@ -363,9 +441,8 @@ export function readPack(
       baseOid = buffer.toString('hex', offset, offset + 20);
       offset += 20;
     }
-    const { data, consumed } = inflateAt(buffer, offset);
+    const { data, consumed } = inflateAt(buffer, offset, size);
     offset += consumed;
-    void size;
     raws.push({ typeId, data: typeId === 6 || typeId === 7 ? undefined : data, baseOid, baseOffset, startOffset });
     if (typeId === 6 || typeId === 7) {
       raws[raws.length - 1].data = data; // delta payload (still store raw delta bytes here temporarily)

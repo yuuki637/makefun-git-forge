@@ -13,7 +13,7 @@ import {
   resolveCommitish,
   storeObject,
 } from './store.ts';
-import { hashObject, parseCommit, parseTree, ZERO_OID } from './git.ts';
+import { commitHeaderOf, hashObject, parseCommit, parseTree, ZERO_OID } from './git.ts';
 import { type Ctx, type Reply, bodyObj, errorReply, jsonReply, paginate, str } from './web.ts';
 
 // ------------------------------------------------------------- serializers
@@ -389,7 +389,7 @@ function handleContents(ctx: Ctx, repo: Repo, path: string): Reply {
     if (!tip) return errorReply(404, 'Not Found');
     const treeOid = (() => {
       const obj = repo.objects.get(tip);
-      return obj && obj.type === 'commit' ? parseCommit(obj.data).tree : null;
+      return obj && obj.type === 'commit' ? commitHeaderOf(obj).tree : null;
     })();
     if (!treeOid) return errorReply(404, 'Not Found');
     // Walk to the target path.

@@ -4,8 +4,8 @@ import {
   PKT_FLUSH,
   PKT_RESPONSE_END,
   ZERO_OID,
+  commitHeaderOf,
   decodePackets,
-  parseCommit,
   parseTag,
   parseTree,
   pktLine,
@@ -59,7 +59,7 @@ function boundedClosure(repo: Repo, roots: string[], boundary: Set<string>): Set
     if (!obj) continue;
     out.add(oid);
     if (obj.type === 'commit') {
-      const commit = parseCommit(obj.data);
+      const commit = commitHeaderOf(obj);
       stack.push(commit.tree);
       if (!boundary.has(oid)) for (const parent of commit.parents) stack.push(parent);
     } else if (obj.type === 'tree') {
@@ -113,7 +113,7 @@ function planFetch(
       if (shallowSet.has(current)) continue;
       const obj = repo.objects.get(current);
       if (obj && obj.type === 'commit') {
-        for (const parent of parseCommit(obj.data).parents) stack.push(parent);
+        for (const parent of commitHeaderOf(obj).parents) stack.push(parent);
       }
     }
   }
@@ -132,7 +132,7 @@ function planFetch(
       if (!included.has(oid)) continue;
       const obj = repo.objects.get(oid);
       if (obj && obj.type === 'commit') {
-        const parents = parseCommit(obj.data).parents;
+        const parents = commitHeaderOf(obj).parents;
         if (parents.every((p) => included.has(p))) unshallow.push(oid);
       }
     }
@@ -149,12 +149,12 @@ function planFetch(
       queue.push({ oid: commit, gen: 1 });
     }
   }
-  while (queue.length > 0) {
-    const { oid, gen } = queue.shift() as { oid: string; gen: number };
+  for (let head = 0; head < queue.length; head += 1) {
+    const { oid, gen } = queue[head];
     if (gen >= depth) continue;
     const obj = repo.objects.get(oid);
     if (!obj || obj.type !== 'commit') continue;
-    for (const parent of parseCommit(obj.data).parents) {
+    for (const parent of commitHeaderOf(obj).parents) {
       if (!generations.has(parent)) {
         generations.set(parent, gen + 1);
         queue.push({ oid: parent, gen: gen + 1 });
@@ -186,7 +186,7 @@ function planFetch(
   for (const [oid, gen] of generations) {
     if (gen !== depth) continue;
     const obj = repo.objects.get(oid);
-    if (obj && obj.type === 'commit' && parseCommit(obj.data).parents.length > 0) boundary.add(oid);
+    if (obj && obj.type === 'commit' && commitHeaderOf(obj).parents.length > 0) boundary.add(oid);
   }
   const shallow = [...boundary].filter((oid) => !shallowSet.has(oid));
   const unshallow: string[] = [];
@@ -194,7 +194,7 @@ function planFetch(
     if (!included.has(oid) || boundary.has(oid)) continue;
     const obj = repo.objects.get(oid);
     if (obj && obj.type === 'commit') {
-      const parents = parseCommit(obj.data).parents;
+      const parents = commitHeaderOf(obj).parents;
       if (parents.length === 0 || parents.every((p) => included.has(p))) unshallow.push(oid);
     }
   }

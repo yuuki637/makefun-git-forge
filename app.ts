@@ -29,6 +29,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 }
 
 function decodeSegment(segment: string): string {
+  if (!segment.includes('%')) return segment; // the common case needs no decoding
   try {
     return decodeURIComponent(segment);
   } catch {
@@ -50,10 +51,15 @@ export function createApp(): Server {
         const url = new URL(req.url ?? '/', 'http://forge.internal');
         const segments = url.pathname.split('/').filter((s) => s !== '').map(decodeSegment);
         const path = `/${segments.join('/')}`;
+        const isGitPath = segments.length >= 2 && segments[1].endsWith('.git');
 
         let json: unknown;
         let jsonError = false;
-        if (rawBody.length > 0) {
+        // Git smart-HTTP bodies are binary (pkt-lines + pack); they are
+        // never JSON, and the git handlers read rawBody only. Skipping
+        // the doomed utf8 conversion + parse attempt matters: a push is
+        // two requests and receive-pack runs hundreds of times in a row.
+        if (rawBody.length > 0 && !isGitPath) {
           try {
             json = JSON.parse(rawBody.toString('utf8'));
           } catch {
@@ -79,7 +85,6 @@ export function createApp(): Server {
           authed,
         };
 
-        const isGitPath = segments.length >= 2 && segments[1].endsWith('.git');
         const needsAuth = path !== '/healthz' && (segments[0] === 'api' || path === '/mcp' || isGitPath);
 
         let reply: Reply;
